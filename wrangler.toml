@@ -1,0 +1,25 @@
+name = "cftgsx"
+main = "worker.js"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[env.production]
+name = "cftgsx"
+
+[env.development]
+name = "cftgsx-dev"
+
+# 环境变量配置说明
+# 在部署前需要在Cloudflare Workers控制台设置以下环境变量：
+# BOT_TOKEN = "your_telegram_bot_token"
+# ADMIN_CHAT_ID = "your_admin_chat_id"
+# WEBHOOK_SECRET = "your_webhook_secret"
+# USER_ID_SECRET = "your_user_id_secret"
+# ENABLE_USER_TRACKING = "true"
+# ENABLE_FORUM_MODE = "true"  # 启用论坛话题模式（需要管理员聊天为论坛群组）
+
+# KV存储绑定（可选，用于用户跟踪功能）
+# [[kv_namespaces]]
+# binding = "USER_STORAGE"
+# id = "your_kv_namespace_id"
+# preview_id = "your_preview_kv_namespace_id" 

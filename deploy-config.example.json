@@ -1,0 +1,58 @@
+{
+  "name": "cftgsx",
+  "environment_variables": {
+    "BOT_TOKEN": {
+      "type": "secret",
+      "description": "Telegram Bot Token from @BotFather",
+      "example": "1234567890:AAAA-BBBBBBBBBBBBBBBBBBBBBBBBBB",
+      "required": true
+    },
+    "ADMIN_CHAT_ID": {
+      "type": "secret", 
+      "description": "Admin's Telegram Chat ID",
+      "example": "123456789",
+      "required": true
+    },
+    "WEBHOOK_SECRET": {
+      "type": "secret",
+      "description": "Secret key for webhook verification",
+      "example": "your-random-secret-key",
+      "required": false,
+      "recommended": true
+    },
+    "USER_ID_SECRET": {
+      "type": "secret",
+      "description": "Secret key for user ID signature (防止身份伪造)",
+      "example": "your-user-id-secret-key", 
+      "required": false,
+      "recommended": true
+    },
+    "ENABLE_USER_TRACKING": {
+      "type": "plain",
+      "description": "Enable user tracking for broadcast features",
+      "example": "true",
+      "required": false
+    },
+    "ENABLE_FORUM_MODE": {
+      "type": "plain",
+      "description": "启用论坛话题模式 (需要管理员聊天为论坛群组)",
+      "example": "true",
+      "required": false
+    }
+  },
+  "kv_namespaces": {
+    "USER_STORAGE": {
+      "description": "KV storage for user tracking (optional)",
+      "required": false
+    }
+  },
+  "setup_instructions": [
+    "1. 创建Telegram机器人并获取Bot Token",
+    "2. 获取管理员的Chat ID", 
+    "3. 在Cloudflare Workers中配置环境变量",
+    "4. (可选) 创建KV存储空间用于用户跟踪",
+    "5. (可选) 如需论坛模式，将管理员聊天设为论坛群组并启用ENABLE_FORUM_MODE",
+    "6. 访问 /setWebhook 端点设置webhook",
+    "7. 测试机器人功能"
+  ]
+} 

@@ -1,0 +1,48 @@
+{
+  "name": "cftgsx",
+  "version": "1.2.0",
+  "description": "Cloudflare-Telegram 双向Bot - 基于Cloudflare Workers的高性能无状态双向消息转发解决方案",
+  "main": "worker.js",
+  "type": "module",
+  "scripts": {
+    "deploy": "npx wrangler deploy",
+    "deploy:prod": "npx wrangler deploy --env production",
+    "deploy:dev": "npx wrangler deploy --env development", 
+    "dev": "npx wrangler dev",
+    "login": "npx wrangler auth login",
+    "whoami": "npx wrangler auth whoami",
+    "kv:create": "npx wrangler kv:namespace create USER_STORAGE",
+    "kv:create:preview": "npx wrangler kv:namespace create USER_STORAGE --preview",
+    "webhook:set": "curl https://your-worker.your-subdomain.workers.dev/setWebhook",
+    "status": "curl https://your-worker.your-subdomain.workers.dev/",
+    "bot:info": "curl https://your-worker.your-subdomain.workers.dev/me"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "cloudflare",
+    "workers",
+    "serverless",
+    "双向消息",
+    "message-forwarding",
+    "群发",
+    "broadcast"
+  ],
+  "author": "SCSHIRKER",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SCSHIRKER/cftgsx.git"
+  },
+  "bugs": {
+    "url": "https://github.com/SCSHIRKER/cftgsx/issues"
+  },
+  "homepage": "https://github.com/SCSHIRKER/cftgsx#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {},
+  "dependencies": {
+    "wrangler": "^3.0.0"
+  }
+} 
