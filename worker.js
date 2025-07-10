@@ -450,14 +450,16 @@ async function addUserToKV(chatId, userInfo, env) {
 
 // 改进的群发媒体消息发送函数
 async function sendMediaBroadcastToUser(userChatId, adminChatId, messageId, broadcastMessage, botToken) {
+  // 构建广播前缀（使用纯文本格式，避免Markdown解析问题）
+  const broadcastPrefix = '📢 管理员广播:';
+  
   try {
-    // 构建广播前缀（使用纯文本格式，避免Markdown解析问题）
-    const broadcastPrefix = '📢 管理员广播:';
-    const fullCaption = `${broadcastPrefix}\n\n${broadcastMessage}`;
+    const escapedBroadcastMessage = escapeMarkdown(broadcastMessage);
+    const fullCaption = `${broadcastPrefix}\n\n${escapedBroadcastMessage}`;
     
     // 检查caption长度限制（Telegram限制为1024字符）
     const finalCaption = fullCaption.length > 1024 
-      ? `${broadcastPrefix}\n\n${broadcastMessage.substring(0, 1024 - broadcastPrefix.length - 4)}...`
+      ? `${broadcastPrefix}\n\n${escapedBroadcastMessage.substring(0, 1024 - broadcastPrefix.length - 4)}...`
       : fullCaption;
     
     // 尝试发送带caption的媒体消息
@@ -487,7 +489,8 @@ async function sendMediaBroadcastToUser(userChatId, adminChatId, messageId, broa
     
     // 最后的fallback：只发送文本提示
     try {
-      await sendMessage(userChatId, `${broadcastPrefix}\n\n${broadcastMessage}\n\n📎 管理员还发送了一个文件`, botToken);
+      const escapedBroadcastMessage = escapeMarkdown(broadcastMessage);
+      await sendMessage(userChatId, `${broadcastPrefix}\n\n${escapedBroadcastMessage}\n\n📎 管理员还发送了一个文件`, botToken);
       return await copyMessage(userChatId, adminChatId, messageId, botToken);
     } catch (fallbackError) {
       logError('sendMediaBroadcastToUser', fallbackError, { userChatId, messageId, stage: 'fallback' });
@@ -550,7 +553,9 @@ async function broadcastMessage(userIds, message, env, isMedia = false, mediaOpt
           if (isMedia) {
             await sendMediaBroadcastToUser(chatId, env.ADMIN_CHAT_ID, mediaOptions.messageId, message, env.BOT_TOKEN);
           } else {
-            await sendMessage(chatId, `📢 *管理员广播:*\n\n${message}`, env.BOT_TOKEN);
+            // 转义广播消息中的特殊字符
+            const escapedMessage = escapeMarkdown(message);
+            await sendMessage(chatId, `📢 *管理员广播:*\n\n${escapedMessage}`, env.BOT_TOKEN);
           }
           results.success++;
         } catch (error) {
@@ -632,6 +637,16 @@ async function callTelegramAPI(method, params, botToken) {
   }
 }
 
+// 转义 Telegram Markdown 特殊字符
+function escapeMarkdown(text) {
+  if (typeof text !== 'string') {
+    return text;
+  }
+  
+  // Telegram Markdown 特殊字符需要转义
+  return text.replace(/[_*\[\]()~`>#+=|{}.!-]/g, '\\$&');
+}
+
 // 发送消息
 async function sendMessage(chatId, text, botToken, options = {}) {
   try {
@@ -641,7 +656,7 @@ async function sendMessage(chatId, text, botToken, options = {}) {
     const params = {
       chat_id: chatId,
       text: text,
-      parse_mode: 'Markdown',
+      parse_mode: options.parse_mode || 'Markdown',
       ...options
     };
     
@@ -802,9 +817,10 @@ async function handleUserMessage(message, env) {
       forwardResult = await sendMessage(env.ADMIN_CHAT_ID, forwardText, env.BOT_TOKEN, messageOptions)
     } else {
       // 媒体消息
+      const escapedCaption = message.caption ? escapeMarkdown(message.caption) : '';
       const caption = env.ENABLE_FORUM_MODE === 'true' && messageOptions.message_thread_id
-        ? `📝 *新消息:*${message.caption ? `\n${message.caption}` : ''}\n\n\`${secureUserTag}\``
-        : `${userInfo.header}\n${message.caption ? `📝 *说明:* ${message.caption}\n\n` : ''}\`${secureUserTag}\``
+        ? `📝 *新消息:*${escapedCaption ? `\n${escapedCaption}` : ''}\n\n\`${secureUserTag}\``
+        : `${userInfo.header}\n${escapedCaption ? `📝 *说明:* ${escapedCaption}\n\n` : ''}\`${secureUserTag}\``
       
       forwardResult = await copyMessage(env.ADMIN_CHAT_ID, userInfo.chatId, message.message_id, env.BOT_TOKEN, {
         ...messageOptions,
@@ -1060,7 +1076,9 @@ async function handleAdminMessage(message, env) {
       // 发送回复给用户
       let replyResult
       if (message.text) {
-        replyResult = await sendMessage(userChatId, `💬 *管理员回复:*\n\n${message.text}`, env.BOT_TOKEN)
+        // 转义管理员消息中的特殊字符以避免 Markdown 解析错误
+        const escapedText = escapeMarkdown(message.text);
+        replyResult = await sendMessage(userChatId, `💬 *管理员回复:*\n\n${escapedText}`, env.BOT_TOKEN)
       } else {
         // 使用改进的媒体消息发送函数
         replyResult = await sendMediaReplyToUser(userChatId, env.ADMIN_CHAT_ID, message.message_id, message.caption, env.BOT_TOKEN)
@@ -1106,7 +1124,9 @@ async function handleAdminMessage(message, env) {
         // 发送消息给用户
         let replyResult
         if (message.text) {
-          replyResult = await sendMessage(userChatId, `💬 *管理员回复:*\n\n${message.text}`, env.BOT_TOKEN)
+          // 转义管理员消息中的特殊字符以避免 Markdown 解析错误
+          const escapedText = escapeMarkdown(message.text);
+          replyResult = await sendMessage(userChatId, `💬 *管理员回复:*\n\n${escapedText}`, env.BOT_TOKEN)
         } else {
           // 使用改进的媒体消息发送函数
           replyResult = await sendMediaReplyToUser(userChatId, env.ADMIN_CHAT_ID, message.message_id, message.caption, env.BOT_TOKEN)
@@ -1157,7 +1177,8 @@ async function handleAdminMessage(message, env) {
   } catch (error) {
     console.error('处理管理员消息错误:', error)
     try {
-      await sendMessage(env.ADMIN_CHAT_ID, `❌ 处理消息时发生错误: ${error.message}`, env.BOT_TOKEN, { 
+      const escapedErrorMessage = escapeMarkdown(error.message);
+      await sendMessage(env.ADMIN_CHAT_ID, `❌ 处理消息时发生错误: ${escapedErrorMessage}`, env.BOT_TOKEN, { 
         message_thread_id: message.message_thread_id 
       })
     } catch (sendError) {
@@ -1212,8 +1233,14 @@ async function handleWebhook(request, env, ctx) {
     
     // 使用 ctx.waitUntil 进行后台错误记录
     ctx.waitUntil(
-      sendMessage(env.ADMIN_CHAT_ID, `🚨 Bot错误: ${error.message}`, env.BOT_TOKEN)
-        .catch(err => console.error('发送错误通知失败:', err))
+      (async () => {
+        try {
+          const escapedErrorMessage = escapeMarkdown(error.message);
+          await sendMessage(env.ADMIN_CHAT_ID, `🚨 Bot错误: ${escapedErrorMessage}`, env.BOT_TOKEN);
+        } catch (err) {
+          console.error('发送错误通知失败:', err);
+        }
+      })()
     )
     
     return new Response('Internal Server Error', { status: 500 })
@@ -1262,8 +1289,14 @@ async function handleRequest(request, env, ctx) {
     
     // 后台错误记录
     ctx.waitUntil(
-      sendMessage(env.ADMIN_CHAT_ID, `🚨 系统错误: ${error.message}`, env.BOT_TOKEN)
-        .catch(err => console.error('发送系统错误通知失败:', err))
+      (async () => {
+        try {
+          const escapedErrorMessage = escapeMarkdown(error.message);
+          await sendMessage(env.ADMIN_CHAT_ID, `🚨 系统错误: ${escapedErrorMessage}`, env.BOT_TOKEN);
+        } catch (err) {
+          console.error('发送系统错误通知失败:', err);
+        }
+      })()
     )
     
     return new Response('Internal Server Error', { status: 500 })
