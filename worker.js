@@ -315,14 +315,28 @@ async function verifyUserIdSignature(userId, signature, secret) {
   }
 }
 
-// 创建安全的用户标识符
-async function createSecureUserTag(userId, secret) {
+// 创建安全的用户标识符（可点击链接）
+async function createSecureUserTag(userId, secret, username = null) {
   try {
     const signature = await generateUserIdSignature(userId, secret);
-    return `[USER:${userId}:${signature}]`;
+    
+    if (username) {
+      // 对于有username的用户，使用@username格式，但保留签名用于验证
+      return `[@${username} (${userId}:${signature})](https://t.me/${username})`;
+    } else {
+      // 对于没有username的用户，使用user ID深度链接
+      return `[👤 USER:${userId}:${signature}](tg://user?id=${userId})`;
+    }
   } catch (error) {
     logError('createSecureUserTag', error, { userId });
-    return `[USER:${userId}]`;
+    
+    if (username) {
+      // 降级处理，使用简单的@username链接
+      return `[@${username}](https://t.me/${username})`;
+    } else {
+      // 降级处理，仍然可点击但没有签名验证
+      return `[👤 USER:${userId}](tg://user?id=${userId})`;
+    }
   }
 }
 
@@ -331,7 +345,53 @@ async function extractUserChatId(messageText, secret) {
   try {
     if (!messageText || typeof messageText !== 'string') return null;
     
-    // 新的安全格式：[USER:id:signature] 
+    // 新的username链接格式：[@username (userId:signature)](https://t.me/username)
+    const usernameMatch = messageText.match(/\[@\w+ \((\d+):([a-f0-9]{16})\)\]\(https:\/\/t\.me\/\w+\)/);
+    if (usernameMatch) {
+      const userId = usernameMatch[1];
+      const signature = usernameMatch[2];
+      
+      // 验证签名
+      const isValid = await verifyUserIdSignature(userId, signature, secret);
+      if (isValid) {
+        return userId;
+      } else {
+        logError('extractUserChatId', new Error('Invalid signature'), { userId, signature });
+        return null;
+      }
+    }
+    
+    // 兼容username链接格式（无签名）：[@username](https://t.me/username)
+    const legacyUsernameMatch = messageText.match(/\[@(\w+)\]\(https:\/\/t\.me\/\w+\)/);
+    if (legacyUsernameMatch && !usernameMatch) {
+      logInfo('extractUserChatId', 'Using legacy username format, cannot extract user ID from username only');
+      return null; // 无法从username反向获取user ID
+    }
+    
+    // 新的可点击链接格式：[👤 USER:id:signature](tg://user?id=id)
+    const clickableLinkMatch = messageText.match(/\[👤 USER:(\d+):([a-f0-9]{16})\]\(tg:\/\/user\?id=\d+\)/);
+    if (clickableLinkMatch) {
+      const userId = clickableLinkMatch[1];
+      const signature = clickableLinkMatch[2];
+      
+      // 验证签名
+      const isValid = await verifyUserIdSignature(userId, signature, secret);
+      if (isValid) {
+        return userId;
+      } else {
+        logError('extractUserChatId', new Error('Invalid signature'), { userId, signature });
+        return null;
+      }
+    }
+    
+    // 兼容旧的可点击链接格式（无签名）：[👤 USER:id](tg://user?id=id)
+    const legacyClickableMatch = messageText.match(/\[👤 USER:(\d+)\]\(tg:\/\/user\?id=\d+\)/);
+    if (legacyClickableMatch && !clickableLinkMatch) {
+      logInfo('extractUserChatId', 'Using legacy clickable format', { userId: legacyClickableMatch[1] });
+      return legacyClickableMatch[1];
+    }
+    
+    // 兼容旧的方括号格式：[USER:id:signature]
     const secureMatch = messageText.match(/\[USER:(\d+):([a-f0-9]{16})\]/);
     if (secureMatch) {
       const userId = secureMatch[1];
@@ -347,9 +407,9 @@ async function extractUserChatId(messageText, secret) {
       }
     }
     
-    // 兼容旧格式（逐步淘汰，仅在没有新格式时使用）
+    // 兼容最旧格式：[USER:id]（逐步淘汰，仅在没有新格式时使用）
     const legacyMatch = messageText.match(/\[USER:(\d+)\](?![:\w])/);
-    if (legacyMatch && !secureMatch) {
+    if (legacyMatch && !secureMatch && !clickableLinkMatch && !legacyClickableMatch && !usernameMatch) {
       logInfo('extractUserChatId', 'Using legacy format', { userId: legacyMatch[1] });
       return legacyMatch[1];
     }
@@ -425,6 +485,7 @@ async function addUserToKV(chatId, userInfo, env) {
     const userData = {
       chatId,
       userName: userInfo.userName,
+      username: userInfo.username, // 保存原始username
       userId: userInfo.userId,
       lastActive: new Date().toISOString()
     };
@@ -708,17 +769,19 @@ async function getMe(botToken) {
 // 创建格式化的用户信息
 function createUserInfo(message) {
   const { from, chat } = message
-  const userName = from.username || from.first_name || 'Unknown'
+  const displayName = from.username || from.first_name || 'Unknown'
+  const username = from.username || null // 单独保存username
   const userId = from.id
   const chatId = chat.id
   const time = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
   
   return {
-    userName,
+    userName: displayName,
+    username: username, // 原始username，可能为null
     userId,
     chatId,
     time,
-    header: `📩 *来自用户: ${userName}*\n🆔 ID: \`${userId}\`\n⏰ 时间: ${time}\n────────────────────`
+    header: `📩 *来自用户: ${displayName}*\n🆔 ID: \`${userId}\`${username ? `\n👤 用户名: @${username}` : ''}\n⏰ 时间: ${time}\n────────────────────`
   }
 }
 
@@ -793,7 +856,7 @@ async function handleUserMessage(message, env) {
     }
 
     // 创建包含用户信息的转发消息
-    const secureUserTag = await createSecureUserTag(userInfo.chatId, env.USER_ID_SECRET)
+    const secureUserTag = await createSecureUserTag(userInfo.chatId, env.USER_ID_SECRET, userInfo.username)
     let forwardResult
     
     // 论坛话题模式支持
@@ -811,16 +874,16 @@ async function handleUserMessage(message, env) {
     if (message.text) {
       // 文本消息
       const forwardText = env.ENABLE_FORUM_MODE === 'true' && messageOptions.message_thread_id
-        ? `📝 *新消息:*\n${message.text}\n\n\`${secureUserTag}\``
-        : `${userInfo.header}\n📝 *消息内容:*\n${message.text}\n\n\`${secureUserTag}\``
+        ? `📝 *新消息:*\n${message.text}\n\n📍 *来源:* ${secureUserTag}`
+        : `${userInfo.header}\n📝 *消息内容:*\n${message.text}\n\n📍 *来源:* ${secureUserTag}`
       
       forwardResult = await sendMessage(env.ADMIN_CHAT_ID, forwardText, env.BOT_TOKEN, messageOptions)
     } else {
       // 媒体消息
       const escapedCaption = message.caption ? escapeMarkdown(message.caption) : '';
       const caption = env.ENABLE_FORUM_MODE === 'true' && messageOptions.message_thread_id
-        ? `📝 *新消息:*${escapedCaption ? `\n${escapedCaption}` : ''}\n\n\`${secureUserTag}\``
-        : `${userInfo.header}\n${escapedCaption ? `📝 *说明:* ${escapedCaption}\n\n` : ''}\`${secureUserTag}\``
+        ? `📝 *新消息:*${escapedCaption ? `\n${escapedCaption}` : ''}\n\n📍 *来源:* ${secureUserTag}`
+        : `${userInfo.header}\n${escapedCaption ? `📝 *说明:* ${escapedCaption}\n\n` : ''}📍 *来源:* ${secureUserTag}`
       
       forwardResult = await copyMessage(env.ADMIN_CHAT_ID, userInfo.chatId, message.message_id, env.BOT_TOKEN, {
         ...messageOptions,
