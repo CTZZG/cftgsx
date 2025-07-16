@@ -718,6 +718,7 @@ async function sendMessage(chatId, text, botToken, options = {}) {
       chat_id: chatId,
       text: text,
       parse_mode: options.parse_mode || 'Markdown',
+      disable_web_page_preview: options.disable_web_page_preview !== undefined ? options.disable_web_page_preview : true,
       ...options
     };
     
@@ -742,6 +743,8 @@ async function copyMessage(chatId, fromChatId, messageId, botToken, options = {}
       chat_id: chatId,
       from_chat_id: fromChatId,
       message_id: messageId,
+      parse_mode: options.parse_mode || 'Markdown',
+      disable_web_page_preview: options.disable_web_page_preview !== undefined ? options.disable_web_page_preview : true,
       ...options
     };
     
@@ -881,8 +884,20 @@ async function handleUserMessage(message, env) {
     } else {
       // 媒体消息
       const escapedCaption = message.caption ? escapeMarkdown(message.caption) : '';
+      
+      // 根据消息类型确定媒体类型标识
+      let mediaType = '📷 图片/文件';
+      if (message.photo) mediaType = '📷 图片';
+      else if (message.video) mediaType = '🎬 视频';
+      else if (message.document) mediaType = '📄 文档';
+      else if (message.voice) mediaType = '🎵 语音';
+      else if (message.audio) mediaType = '🎵 音频';
+      else if (message.video_note) mediaType = '🎥 视频消息';
+      else if (message.sticker) mediaType = '🎭 贴纸';
+      else if (message.animation) mediaType = '🎬 动画';
+      
       const caption = env.ENABLE_FORUM_MODE === 'true' && messageOptions.message_thread_id
-        ? `📝 *新消息:*${escapedCaption ? `\n${escapedCaption}` : ''}\n\n📍 *来源:* ${secureUserTag}`
+        ? `📝 *新消息:*${escapedCaption ? `\n${escapedCaption}` : `\n${mediaType}`}\n\n📍 *来源:* ${secureUserTag}`
         : `${userInfo.header}\n${escapedCaption ? `📝 *说明:* ${escapedCaption}\n\n` : ''}📍 *来源:* ${secureUserTag}`
       
       forwardResult = await copyMessage(env.ADMIN_CHAT_ID, userInfo.chatId, message.message_id, env.BOT_TOKEN, {
