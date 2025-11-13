@@ -19,7 +19,9 @@ const CONSTANTS = {
   TELEGRAM_API_BASE: 'https://api.telegram.org/bot',
   DEFAULT_ICON_COLORS: [0x6FB9F0, 0xFFD67E, 0xCB86DB, 0x6EBF95, 0xFFB3BA, 0x87CEFA],
   MAX_ERROR_DISPLAY: 5,
-  MAX_RECENT_USERS: 20
+  MAX_RECENT_USERS: 20,
+  USERS_DEFAULT_PAGE_SIZE: 20,
+  USERS_PAGE_SIZES: [10, 20, 50]
 };
 
 // 验证环境变量
@@ -704,8 +706,9 @@ function escapeMarkdown(text) {
     return text;
   }
   
-  // Telegram Markdown 特殊字符需要转义
-  return text.replace(/[_*\[\]()~`>#+=|{}.!-]/g, '\\$&');
+  // 仅针对 Telegram 旧版 Markdown 必需字符进行转义，避免破坏 URL（如 https://baidu.com）
+  // 必需转义: _ * [ ] `
+  return text.replace(/[_*\[\]`]/g, '\\$&');
 }
 
 // 发送消息
@@ -769,6 +772,104 @@ async function getMe(botToken) {
   return await callTelegramAPI('getMe', {}, botToken)
 }
 
+// 编辑消息文本
+async function editMessageText(chatId, messageId, text, botToken, options = {}) {
+  try {
+    validateInput(chatId, 'chatId');
+    validateInput(text, 'text', { maxLength: 4096 });
+    
+    const params = {
+      chat_id: chatId,
+      message_id: messageId,
+      text: text,
+      parse_mode: options.parse_mode || 'Markdown',
+      disable_web_page_preview: options.disable_web_page_preview !== undefined ? options.disable_web_page_preview : true,
+      reply_markup: options.reply_markup || undefined
+    };
+    
+    return await callTelegramAPI('editMessageText', params, botToken);
+  } catch (error) {
+    logError('editMessageText', error, { chatId, messageId, textLength: text?.length });
+    throw error;
+  }
+}
+
+// 回答回调查询（用于内联按钮加载状态）
+async function answerCallbackQuery(callbackQueryId, botToken, text = '', showAlert = false) {
+  try {
+    const params = {
+      callback_query_id: callbackQueryId,
+      text,
+      show_alert: !!showAlert
+    };
+    return await callTelegramAPI('answerCallbackQuery', params, botToken);
+  } catch (error) {
+    logError('answerCallbackQuery', error, { callbackQueryId });
+    // 不再向外抛出，避免阻断主要流程
+    return { ok: false, description: error.message };
+  }
+}
+
+// 生成 /users 分页文本与内联键盘
+function buildUsersPage(users, page, pageSize) {
+  const total = users.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const currentPage = Math.min(Math.max(1, page), totalPages);
+  const start = (currentPage - 1) * pageSize;
+  const end = Math.min(start + pageSize, total);
+  
+  const list = users.slice(start, end).map((user, idx) => {
+    const lastActive = new Date(user.lastActive).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+    const escapedName = escapeMarkdown(user.userName || 'Unknown');
+    const displayIndex = start + idx + 1;
+    return `${displayIndex}. ${escapedName}\n   ID: \`${user.chatId}\`\n   最后活跃: ${lastActive}`;
+  }).join('\n\n');
+  
+  const header = `👥 *用户列表*  (第 ${currentPage}/${totalPages} 页 · 共 ${total} 人)`;
+  const body = list || '_暂无数据_';
+  const text = `${header}\n\n${body}`;
+  
+  // 构建分页按钮
+  const pageSizes = CONSTANTS.USERS_PAGE_SIZES || [10, 20, 50];
+  const sizeRow = pageSizes.map((size) => ({
+    text: size === pageSize ? `·${size}` : `${size}`,
+    callback_data: `users:p=${currentPage},s=${size}`
+  }));
+
+  const inline_keyboard = [];
+  const navRow = [];
+  if (currentPage > 1) {
+    navRow.push({ text: '◀️ 上一页', callback_data: `users:p=${currentPage - 1},s=${pageSize}` });
+  }
+  if (currentPage < totalPages) {
+    navRow.push({ text: '下一页 ▶️', callback_data: `users:p=${currentPage + 1},s=${pageSize}` });
+  }
+  if (navRow.length > 0) inline_keyboard.push(navRow);
+  inline_keyboard.push(sizeRow);
+  
+  return { text, reply_markup: { inline_keyboard }, page: currentPage, pageSize };
+}
+
+function parseUsersCallbackData(data) {
+  // 格式: users:p=2,s=20
+  const defaults = { page: 1, pageSize: CONSTANTS.USERS_DEFAULT_PAGE_SIZE || 20 };
+  if (!data || !data.startsWith('users:')) return defaults;
+  try {
+    const payload = data.substring('users:'.length);
+    const pairs = payload.split(',');
+    const map = {};
+    for (const pair of pairs) {
+      const [k, v] = pair.split('=');
+      if (k && v) map[k.trim()] = v.trim();
+    }
+    const page = parseInt(map.p || map.page || defaults.page, 10) || defaults.page;
+    const pageSize = parseInt(map.s || map.pageSize || defaults.pageSize, 10) || defaults.pageSize;
+    return { page, pageSize };
+  } catch {
+    return defaults;
+  }
+}
+
 // 创建格式化的用户信息
 function createUserInfo(message) {
   const { from, chat } = message
@@ -778,13 +879,17 @@ function createUserInfo(message) {
   const chatId = chat.id
   const time = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
   
+  // 为Markdown渲染转义动态文本，避免解析错误
+  const escapedDisplayName = escapeMarkdown(displayName)
+  const escapedUsernameForHeader = username ? escapeMarkdown(`@${username}`) : ''
+
   return {
     userName: displayName,
     username: username, // 原始username，可能为null
     userId,
     chatId,
     time,
-    header: `📩 *来自用户: ${displayName}*\n🆔 ID: \`${userId}\`${username ? `\n👤 用户名: @${username}` : ''}\n⏰ 时间: ${time}\n────────────────────`
+    header: `📩 *来自用户: ${escapedDisplayName}*\n🆔 ID: \`${userId}\`${username ? `\n👤 用户名: ${escapedUsernameForHeader}` : ''}\n⏰ 时间: ${time}\n────────────────────`
   }
 }
 
@@ -793,13 +898,14 @@ async function sendMediaReplyToUser(userChatId, adminChatId, messageId, original
   try {
     // 构建回复前缀（使用纯文本格式，避免Markdown解析问题）
     const replyPrefix = '💬 管理员回复:';
-    const fullCaption = originalCaption 
-      ? `${replyPrefix}\n\n${originalCaption}` 
+    const escapedCaption = originalCaption ? escapeMarkdown(originalCaption) : ''
+    const fullCaption = escapedCaption 
+      ? `${replyPrefix}\n\n${escapedCaption}` 
       : replyPrefix;
     
     // 检查caption长度限制（Telegram限制为1024字符）
     const finalCaption = fullCaption.length > 1024 
-      ? `${replyPrefix}\n\n${originalCaption.substring(0, 1024 - replyPrefix.length - 4)}...`
+      ? `${replyPrefix}\n\n${escapedCaption.substring(0, 1024 - replyPrefix.length - 4)}...`
       : fullCaption;
     
     // 尝试发送带caption的媒体消息
@@ -876,9 +982,10 @@ async function handleUserMessage(message, env) {
     
     if (message.text) {
       // 文本消息
+      const escapedUserText = escapeMarkdown(message.text)
       const forwardText = env.ENABLE_FORUM_MODE === 'true' && messageOptions.message_thread_id
-        ? `📝 *新消息:*\n${message.text}\n\n📍 *来源:* ${secureUserTag}`
-        : `${userInfo.header}\n📝 *消息内容:*\n${message.text}\n\n📍 *来源:* ${secureUserTag}`
+        ? `📝 *新消息:*\n${escapedUserText}\n\n📍 *来源:* ${secureUserTag}`
+        : `${userInfo.header}\n📝 *消息内容:*\n${escapedUserText}\n\n📍 *来源:* ${secureUserTag}`
       
       forwardResult = await sendMessage(env.ADMIN_CHAT_ID, forwardText, env.BOT_TOKEN, messageOptions)
     } else {
@@ -1069,20 +1176,14 @@ async function handleAdminMessage(message, env) {
         return
       }
 
-      // 按最后活跃时间排序，显示最近的20个用户
+      // 排序（最近活跃优先）
       users.sort((a, b) => new Date(b.lastActive).getTime() - new Date(a.lastActive).getTime())
-      const recentUsers = users.slice(0, CONSTANTS.MAX_RECENT_USERS)
-      
-      const userList = recentUsers.map((user, index) => {
-        const lastActive = new Date(user.lastActive).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
-        return `${index + 1}. ${user.userName}\n   ID: \`${user.chatId}\`\n   最后活跃: ${lastActive}`
-      }).join('\n\n')
-
-      await sendMessage(env.ADMIN_CHAT_ID, 
-        `👥 *用户列表* (最近 ${recentUsers.length}/${users.length})\n\n${userList}${users.length > CONSTANTS.MAX_RECENT_USERS ? '\n\n...' : ''}`, 
-        env.BOT_TOKEN, 
-        { message_thread_id: message.message_thread_id }
-      )
+      const pageSize = CONSTANTS.USERS_DEFAULT_PAGE_SIZE || 20
+      const { text, reply_markup } = buildUsersPage(users, 1, pageSize)
+      await sendMessage(env.ADMIN_CHAT_ID, text, env.BOT_TOKEN, { 
+        message_thread_id: message.message_thread_id,
+        reply_markup
+      })
       return
     }
 
@@ -1287,6 +1388,30 @@ async function handleMessage(message, env) {
   }
 }
 
+// 处理 /users 的分页回调
+async function handleUsersCallbackQuery(callbackQuery, env) {
+  try {
+    const message = callbackQuery.message;
+    const fromChatId = message?.chat?.id;
+    const messageId = message?.message_id;
+    if (!fromChatId || !messageId) {
+      await answerCallbackQuery(callbackQuery.id, env.BOT_TOKEN, '无法定位消息');
+      return;
+    }
+
+    const { page, pageSize } = parseUsersCallbackData(callbackQuery.data);
+    const users = await getUsersFromKV(env);
+    users.sort((a, b) => new Date(b.lastActive).getTime() - new Date(a.lastActive).getTime());
+    const { text, reply_markup } = buildUsersPage(users, page, pageSize);
+
+    await editMessageText(fromChatId, messageId, text, env.BOT_TOKEN, { reply_markup });
+    await answerCallbackQuery(callbackQuery.id, env.BOT_TOKEN);
+  } catch (error) {
+    logError('handleUsersCallbackQuery', error);
+    await answerCallbackQuery(callbackQuery.id, env.BOT_TOKEN, '更新失败', true);
+  }
+}
+
 // 处理Webhook消息
 async function handleWebhook(request, env, ctx) {
   try {
@@ -1303,6 +1428,13 @@ async function handleWebhook(request, env, ctx) {
     if (update.message) {
       // 使用 ctx.waitUntil 进行后台消息处理，不阻塞响应
       ctx.waitUntil(handleMessage(update.message, env))
+    } else if (update.callback_query) {
+      // 内联按钮回调处理（仅用于 /users 分页）
+      const cq = update.callback_query;
+      const data = cq.data || '';
+      if (data && data.startsWith('users:')) {
+        ctx.waitUntil(handleUsersCallbackQuery(cq, env));
+      }
     }
 
     return new Response('OK', { status: 200 })
