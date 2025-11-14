@@ -21,7 +21,8 @@ const CONSTANTS = {
   MAX_ERROR_DISPLAY: 5,
   MAX_RECENT_USERS: 20,
   USERS_DEFAULT_PAGE_SIZE: 20,
-  USERS_PAGE_SIZES: [10, 20, 50]
+  USERS_PAGE_SIZES: [10, 20, 50],
+  VERIFICATION_TIMEOUT_MS: 24 * 60 * 60 * 1000 // 24 hours in milliseconds
 };
 
 // 验证环境变量
@@ -33,12 +34,10 @@ function validateEnvironment(env) {
     throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
   }
   
-  // 验证 ADMIN_CHAT_ID 格式
   if (!/^-?\d+$/.test(env.ADMIN_CHAT_ID)) {
     throw new Error('ADMIN_CHAT_ID must be a valid integer');
   }
   
-  // 验证 BOT_TOKEN 格式
   if (!/^\d+:[A-Za-z0-9_-]+$/.test(env.BOT_TOKEN)) {
     throw new Error('BOT_TOKEN format is invalid');
   }
@@ -185,7 +184,6 @@ async function getUserTopicMapping(env) {
     const mapping = await env.USER_STORAGE.get('user_topic_mapping');
     const parsed = mapping ? JSON.parse(mapping) : {};
     
-    // 验证数据结构
     if (typeof parsed !== 'object' || parsed === null) {
       logError('getUserTopicMapping', new Error('Invalid mapping data structure'));
       return {};
@@ -245,12 +243,10 @@ async function getOrCreateUserTopic(userId, userName, env) {
     
     const mapping = await getUserTopicMapping(env);
     
-    // 如果用户已有话题，返回话题ID
     if (mapping[userId]) {
       return mapping[userId];
     }
     
-    // 创建新话题
     const topicName = `💬 ${userName} (${userId})`;
     const randomColor = CONSTANTS.DEFAULT_ICON_COLORS[
       Math.floor(Math.random() * CONSTANTS.DEFAULT_ICON_COLORS.length)
@@ -281,7 +277,6 @@ async function generateUserIdSignature(userId, secret) {
     validateInput(userId, 'userId');
     
     if (!secret) {
-      // 如果没有配置密钥，使用简单的哈希作为后备
       const data = new TextEncoder().encode(`user:${userId}:fallback`);
       const hashBuffer = await crypto.subtle.digest('SHA-256', data);
       const hashArray = Array.from(new Uint8Array(hashBuffer));
@@ -323,20 +318,16 @@ async function createSecureUserTag(userId, secret, username = null) {
     const signature = await generateUserIdSignature(userId, secret);
     
     if (username) {
-      // 对于有username的用户，使用@username格式，但保留签名用于验证
       return `[@${username} (${userId}:${signature})](https://t.me/${username})`;
     } else {
-      // 对于没有username的用户，使用user ID深度链接
       return `[👤 USER:${userId}:${signature}](tg://user?id=${userId})`;
     }
   } catch (error) {
     logError('createSecureUserTag', error, { userId });
     
     if (username) {
-      // 降级处理，使用简单的@username链接
       return `[@${username}](https://t.me/${username})`;
     } else {
-      // 降级处理，仍然可点击但没有签名验证
       return `[👤 USER:${userId}](tg://user?id=${userId})`;
     }
   }
@@ -347,13 +338,11 @@ async function extractUserChatId(messageText, secret) {
   try {
     if (!messageText || typeof messageText !== 'string') return null;
     
-    // 新的username链接格式：[@username (userId:signature)](https://t.me/username)
     const usernameMatch = messageText.match(/\[@\w+ \((\d+):([a-f0-9]{16})\)\]\(https:\/\/t\.me\/\w+\)/);
     if (usernameMatch) {
       const userId = usernameMatch[1];
       const signature = usernameMatch[2];
       
-      // 验证签名
       const isValid = await verifyUserIdSignature(userId, signature, secret);
       if (isValid) {
         return userId;
@@ -363,20 +352,17 @@ async function extractUserChatId(messageText, secret) {
       }
     }
     
-    // 兼容username链接格式（无签名）：[@username](https://t.me/username)
     const legacyUsernameMatch = messageText.match(/\[@(\w+)\]\(https:\/\/t\.me\/\w+\)/);
     if (legacyUsernameMatch && !usernameMatch) {
       logInfo('extractUserChatId', 'Using legacy username format, cannot extract user ID from username only');
-      return null; // 无法从username反向获取user ID
+      return null;
     }
     
-    // 新的可点击链接格式：[👤 USER:id:signature](tg://user?id=id)
     const clickableLinkMatch = messageText.match(/\[👤 USER:(\d+):([a-f0-9]{16})\]\(tg:\/\/user\?id=\d+\)/);
     if (clickableLinkMatch) {
       const userId = clickableLinkMatch[1];
       const signature = clickableLinkMatch[2];
       
-      // 验证签名
       const isValid = await verifyUserIdSignature(userId, signature, secret);
       if (isValid) {
         return userId;
@@ -386,20 +372,17 @@ async function extractUserChatId(messageText, secret) {
       }
     }
     
-    // 兼容旧的可点击链接格式（无签名）：[👤 USER:id](tg://user?id=id)
     const legacyClickableMatch = messageText.match(/\[👤 USER:(\d+)\]\(tg:\/\/user\?id=\d+\)/);
     if (legacyClickableMatch && !clickableLinkMatch) {
       logInfo('extractUserChatId', 'Using legacy clickable format', { userId: legacyClickableMatch[1] });
       return legacyClickableMatch[1];
     }
     
-    // 兼容旧的方括号格式：[USER:id:signature]
     const secureMatch = messageText.match(/\[USER:(\d+):([a-f0-9]{16})\]/);
     if (secureMatch) {
       const userId = secureMatch[1];
       const signature = secureMatch[2];
       
-      // 验证签名
       const isValid = await verifyUserIdSignature(userId, signature, secret);
       if (isValid) {
         return userId;
@@ -409,7 +392,6 @@ async function extractUserChatId(messageText, secret) {
       }
     }
     
-    // 兼容最旧格式：[USER:id]（逐步淘汰，仅在没有新格式时使用）
     const legacyMatch = messageText.match(/\[USER:(\d+)\](?![:\w])/);
     if (legacyMatch && !secureMatch && !clickableLinkMatch && !legacyClickableMatch && !usernameMatch) {
       logInfo('extractUserChatId', 'Using legacy format', { userId: legacyMatch[1] });
@@ -433,12 +415,10 @@ function parsePostTargets(commandText) {
   const targetsStr = parts[0]
   const message = parts.slice(1).join(' ')
   
-  // 处理特殊关键词
   if (targetsStr === 'all') {
     return { userIds: 'all', message }
   }
   
-  // 解析用户ID列表（逗号分隔）
   const userIds = targetsStr.split(',')
     .map(id => id.trim())
     .filter(id => /^\d+$/.test(id))
@@ -459,7 +439,6 @@ async function getUsersFromKV(env) {
     
     const users = JSON.parse(usersData);
     
-    // 验证数据结构
     if (!Array.isArray(users)) {
       logError('getUsersFromKV', new Error('Invalid users data structure'));
       return [];
@@ -471,6 +450,39 @@ async function getUsersFromKV(env) {
     return [];
   }
 }
+
+// 从KV存储获取单个用户
+async function getUserFromKV(chatId, env) {
+  try {
+    if (!env.USER_STORAGE) {
+      return null;
+    }
+    const users = await getUsersFromKV(env);
+    return users.find(u => u.chatId === chatId) || null;
+  } catch (error) {
+    logError('getUserFromKV', error, { chatId });
+    return null;
+  }
+}
+
+// 更新KV中的用户数据
+async function updateUserInKV(userData, env) {
+  try {
+    if (!env.USER_STORAGE) return;
+    const users = await getUsersFromKV(env);
+    const userIndex = users.findIndex(u => u.chatId === userData.chatId);
+
+    if (userIndex > -1) {
+      users[userIndex] = { ...users[userIndex], ...userData };
+    } else {
+      users.push(userData);
+    }
+    await env.USER_STORAGE.put('user_list', JSON.stringify(users));
+  } catch (error) {
+    logError('updateUserInKV', error, { chatId: userData.chatId });
+  }
+}
+
 
 // 向KV存储添加用户
 async function addUserToKV(chatId, userInfo, env) {
@@ -487,18 +499,19 @@ async function addUserToKV(chatId, userInfo, env) {
     const userData = {
       chatId,
       userName: userInfo.userName,
-      username: userInfo.username, // 保存原始username
+      username: userInfo.username,
       userId: userInfo.userId,
       lastActive: new Date().toISOString()
     };
     
     if (existingIndex >= 0) {
-      users[existingIndex] = userData;
+      users[existingIndex] = { ...users[existingIndex], ...userData };
     } else {
+      userData.verified = false;
+      userData.firstMessageSent = false;
       users.push(userData);
     }
     
-    // 保持最多指定数量的用户记录
     if (users.length > CONSTANTS.MAX_USERS_LIMIT) {
       users.sort((a, b) => new Date(b.lastActive).getTime() - new Date(a.lastActive).getTime());
       users.splice(CONSTANTS.MAX_USERS_LIMIT);
@@ -513,44 +526,36 @@ async function addUserToKV(chatId, userInfo, env) {
 
 // 改进的群发媒体消息发送函数
 async function sendMediaBroadcastToUser(userChatId, adminChatId, messageId, broadcastMessage, botToken) {
-  // 构建广播前缀（使用纯文本格式，避免Markdown解析问题）
   const broadcastPrefix = '📢 管理员广播:';
   
   try {
     const escapedBroadcastMessage = escapeMarkdown(broadcastMessage);
     const fullCaption = `${broadcastPrefix}\n\n${escapedBroadcastMessage}`;
     
-    // 检查caption长度限制（Telegram限制为1024字符）
     const finalCaption = fullCaption.length > 1024 
       ? `${broadcastPrefix}\n\n${escapedBroadcastMessage.substring(0, 1024 - broadcastPrefix.length - 4)}...`
       : fullCaption;
     
-    // 尝试发送带caption的媒体消息
     const result = await copyMessage(userChatId, adminChatId, messageId, botToken, {
       caption: finalCaption
     });
     
-    // 如果成功，直接返回
     if (result.ok) {
       return result;
     }
     
-    // 如果失败（可能是文件类型不支持caption），则分别发送
     logInfo('sendMediaBroadcastToUser', 'Caption failed, sending separately', { 
       error: result.description,
       userChatId 
     });
     
-    // 先发送广播前缀和内容
     await sendMessage(userChatId, fullCaption, botToken);
     
-    // 再发送原始媒体（不带caption）
     return await copyMessage(userChatId, adminChatId, messageId, botToken);
     
   } catch (error) {
     logError('sendMediaBroadcastToUser', error, { userChatId, messageId });
     
-    // 最后的fallback：只发送文本提示
     try {
       const escapedBroadcastMessage = escapeMarkdown(broadcastMessage);
       await sendMessage(userChatId, `${broadcastPrefix}\n\n${escapedBroadcastMessage}\n\n📎 管理员还发送了一个文件`, botToken);
@@ -569,16 +574,15 @@ async function broadcastMessage(userIds, message, env, isMedia = false, mediaOpt
   try {
     validateInput(message, 'text', { maxLength: 4096 });
     
-    // 获取实际的用户ID列表
     let targetUserIds = [];
     if (userIds === 'all') {
       const users = await getUsersFromKV(env);
-      targetUserIds = users.map(u => u.chatId);
+      targetUserIds = users.filter(u => u.verified).map(u => u.chatId);
       if (targetUserIds.length === 0) {
         return { 
           success: 0, 
           failed: 1, 
-          errors: ['未找到可广播的用户，请确保已启用用户跟踪功能'] 
+          errors: ['未找到可广播的已验证用户'] 
         };
       }
     } else {
@@ -589,7 +593,6 @@ async function broadcastMessage(userIds, message, env, isMedia = false, mediaOpt
       return { success: 0, failed: 1, errors: ['未指定有效的用户ID'] };
     }
     
-    // 验证所有用户ID
     const validUserIds = targetUserIds.filter(id => {
       try {
         validateInput(id, 'chatId');
@@ -607,7 +610,6 @@ async function broadcastMessage(userIds, message, env, isMedia = false, mediaOpt
       messageLength: message.length 
     });
     
-    // 限制并发数量以避免API限制
     for (let i = 0; i < validUserIds.length; i += CONSTANTS.BROADCAST_BATCH_SIZE) {
       const batch = validUserIds.slice(i, i + CONSTANTS.BROADCAST_BATCH_SIZE);
       
@@ -616,7 +618,6 @@ async function broadcastMessage(userIds, message, env, isMedia = false, mediaOpt
           if (isMedia) {
             await sendMediaBroadcastToUser(chatId, env.ADMIN_CHAT_ID, mediaOptions.messageId, message, env.BOT_TOKEN);
           } else {
-            // 转义广播消息中的特殊字符
             const escapedMessage = escapeMarkdown(message);
             await sendMessage(chatId, `📢 *管理员广播:*\n\n${escapedMessage}`, env.BOT_TOKEN);
           }
@@ -630,7 +631,6 @@ async function broadcastMessage(userIds, message, env, isMedia = false, mediaOpt
       
       await Promise.allSettled(promises);
       
-      // 添加短暂延迟以避免触发速率限制
       if (i + CONSTANTS.BROADCAST_BATCH_SIZE < validUserIds.length) {
         await new Promise(resolve => setTimeout(resolve, CONSTANTS.BROADCAST_DELAY_MS));
       }
@@ -685,7 +685,6 @@ async function callTelegramAPI(method, params, botToken) {
 
     const result = await response.json();
     
-    // 验证返回数据结构
     if (typeof result !== 'object' || !result.hasOwnProperty('ok')) {
       throw new Error('Invalid API response format');
     }
@@ -705,9 +704,6 @@ function escapeMarkdown(text) {
   if (typeof text !== 'string') {
     return text;
   }
-  
-  // 仅针对 Telegram 旧版 Markdown 必需字符进行转义，避免破坏 URL（如 https://baidu.com）
-  // 必需转义: _ * [ ] `
   return text.replace(/[_*\[\]`]/g, '\\$&');
 }
 
@@ -805,7 +801,6 @@ async function answerCallbackQuery(callbackQueryId, botToken, text = '', showAle
     return await callTelegramAPI('answerCallbackQuery', params, botToken);
   } catch (error) {
     logError('answerCallbackQuery', error, { callbackQueryId });
-    // 不再向外抛出，避免阻断主要流程
     return { ok: false, description: error.message };
   }
 }
@@ -822,14 +817,14 @@ function buildUsersPage(users, page, pageSize) {
     const lastActive = new Date(user.lastActive).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
     const escapedName = escapeMarkdown(user.userName || 'Unknown');
     const displayIndex = start + idx + 1;
-    return `${displayIndex}. ${escapedName}\n   ID: \`${user.chatId}\`\n   最后活跃: ${lastActive}`;
+    const verifiedStatus = user.verified ? '✅' : '⏳';
+    return `${displayIndex}. ${verifiedStatus} ${escapedName}\n   ID: \`${user.chatId}\`\n   最后活跃: ${lastActive}`;
   }).join('\n\n');
   
   const header = `👥 *用户列表*  (第 ${currentPage}/${totalPages} 页 · 共 ${total} 人)`;
   const body = list || '_暂无数据_';
   const text = `${header}\n\n${body}`;
   
-  // 构建分页按钮
   const pageSizes = CONSTANTS.USERS_PAGE_SIZES || [10, 20, 50];
   const sizeRow = pageSizes.map((size) => ({
     text: size === pageSize ? `·${size}` : `${size}`,
@@ -839,7 +834,7 @@ function buildUsersPage(users, page, pageSize) {
   const inline_keyboard = [];
   const navRow = [];
   if (currentPage > 1) {
-    navRow.push({ text: '◀️ 上一页', callback_data: `users:p=${currentPage - 1},s=${pageSize}` });
+    navRow.push({ text: ◀️ 上一页', callback_data: `users:p=${currentPage - 1},s=${pageSize}` });
   }
   if (currentPage < totalPages) {
     navRow.push({ text: '下一页 ▶️', callback_data: `users:p=${currentPage + 1},s=${pageSize}` });
@@ -851,7 +846,6 @@ function buildUsersPage(users, page, pageSize) {
 }
 
 function parseUsersCallbackData(data) {
-  // 格式: users:p=2,s=20
   const defaults = { page: 1, pageSize: CONSTANTS.USERS_DEFAULT_PAGE_SIZE || 20 };
   if (!data || !data.startsWith('users:')) return defaults;
   try {
@@ -874,18 +868,17 @@ function parseUsersCallbackData(data) {
 function createUserInfo(message) {
   const { from, chat } = message
   const displayName = from.username || from.first_name || 'Unknown'
-  const username = from.username || null // 单独保存username
+  const username = from.username || null
   const userId = from.id
   const chatId = chat.id
   const time = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
   
-  // 为Markdown渲染转义动态文本，避免解析错误
   const escapedDisplayName = escapeMarkdown(displayName)
   const escapedUsernameForHeader = username ? escapeMarkdown(`@${username}`) : ''
 
   return {
     userName: displayName,
-    username: username, // 原始username，可能为null
+    username: username,
     userId,
     chatId,
     time,
@@ -896,44 +889,36 @@ function createUserInfo(message) {
 // 改进的媒体消息发送函数
 async function sendMediaReplyToUser(userChatId, adminChatId, messageId, originalCaption, botToken) {
   try {
-    // 构建回复前缀（使用纯文本格式，避免Markdown解析问题）
     const replyPrefix = '💬 管理员回复:';
     const escapedCaption = originalCaption ? escapeMarkdown(originalCaption) : ''
     const fullCaption = escapedCaption 
       ? `${replyPrefix}\n\n${escapedCaption}` 
       : replyPrefix;
     
-    // 检查caption长度限制（Telegram限制为1024字符）
     const finalCaption = fullCaption.length > 1024 
       ? `${replyPrefix}\n\n${escapedCaption.substring(0, 1024 - replyPrefix.length - 4)}...`
       : fullCaption;
     
-    // 尝试发送带caption的媒体消息
     const result = await copyMessage(userChatId, adminChatId, messageId, botToken, {
       caption: finalCaption
     });
     
-    // 如果成功，直接返回
     if (result.ok) {
       return result;
     }
     
-    // 如果失败（可能是文件类型不支持caption），则分别发送
     logInfo('sendMediaReplyToUser', 'Caption failed, sending separately', { 
       error: result.description,
       userChatId 
     });
     
-    // 先发送回复前缀文本
     await sendMessage(userChatId, replyPrefix, botToken);
     
-    // 再发送原始媒体（不带caption）
     return await copyMessage(userChatId, adminChatId, messageId, botToken);
     
   } catch (error) {
     logError('sendMediaReplyToUser', error, { userChatId, messageId });
     
-    // 最后的fallback：只发送文本提示
     try {
       await sendMessage(userChatId, '💬 管理员发送了一个文件', botToken);
       return await copyMessage(userChatId, adminChatId, messageId, botToken);
@@ -944,55 +929,161 @@ async function sendMediaReplyToUser(userChatId, adminChatId, messageId, original
   }
 }
 
+// 生成验证挑战
+function generateVerificationChallenge() {
+    let num1 = Math.floor(Math.random() * 100);
+    let num2 = Math.floor(Math.random() * 100);
+    const operators = ['+', '-', '*'];
+    const op = operators[Math.floor(Math.random() * operators.length)];
+    let question, answer;
+
+    switch (op) {
+        case '+':
+            question = `${num1} + ${num2}`;
+            answer = num1 + num2;
+            break;
+        case '-':
+            if (num1 < num2) [num1, num2] = [num2, num1];
+            question = `${num1} - ${num2}`;
+            answer = num1 - num2;
+            break;
+        case '*':
+            num1 = Math.floor(Math.random() * 10) + 1;
+            num2 = Math.floor(Math.random() * 10) + 1;
+            question = `${num1} × ${num2}`;
+            answer = num1 * num2;
+            break;
+    }
+    return { question: `请计算: ${question} = ?`, answer: answer.toString() };
+}
+
 // 处理用户消息
 async function handleUserMessage(message, env) {
-  const userInfo = createUserInfo(message)
+  const userInfo = createUserInfo(message);
+
+  if (env.ENABLE_USER_TRACKING !== 'true') {
+    console.log("用户跟踪未启用，跳过验证，直接转发。");
+    await forwardUserMessage(message, env, userInfo, null);
+    return;
+  }
   
-  try {
-    // 自动跟踪用户（如果启用）
-    if (env.ENABLE_USER_TRACKING === 'true') {
-      await addUserToKV(userInfo.chatId, userInfo, env)
+  const now = Date.now();
+  await addUserToKV(userInfo.chatId, userInfo, env);
+  const user = await getUserFromKV(userInfo.chatId, env);
+
+  if (user && user.verified) {
+    const timeSinceLastActive = now - new Date(user.lastActive).getTime();
+    
+    if (timeSinceLastActive > CONSTANTS.VERIFICATION_TIMEOUT_MS) {
+      logInfo('handleUserMessage', 'User verification expired', { chatId: userInfo.chatId });
+      await sendMessage(userInfo.chatId, `⏰ 由于您长时间未活动，需要重新进行验证。`, env.BOT_TOKEN);
+      
+      user.verified = false;
+      user.firstMessageSent = false;
+      await updateUserInKV(user, env);
+      await sendVerificationChallenge(userInfo, env);
+      return;
     }
     
-    // 发送欢迎消息给新用户
+    user.lastActive = new Date(now).toISOString();
+    await updateUserInKV(user, env);
+    await forwardUserMessage(message, env, userInfo, user);
+    return;
+  }
+
+  if (message.text === '/start') {
+      await sendVerificationChallenge(userInfo, env);
+      return;
+  }
+  
+  if (user && user.verificationChallenge) {
+    const userAnswer = message.text.trim();
+    if (userAnswer === user.verificationChallenge.answer) {
+        user.verified = true;
+        user.firstMessageSent = false;
+        user.lastActive = new Date(now).toISOString();
+        delete user.verificationChallenge;
+        await updateUserInKV(user, env);
+        await sendMessage(userInfo.chatId, `✅ 验证成功！\n\n您的第一条消息必须是纯文本信息（不能包含链接）。之后您便可以发送任何类型的消息。`, env.BOT_TOKEN);
+    } else {
+        await sendMessage(userInfo.chatId, `❌ 回答错误，请重试。`, env.BOT_TOKEN);
+        await sendVerificationChallenge(userInfo, env);
+    }
+  } else {
+    await sendVerificationChallenge(userInfo, env);
+  }
+}
+
+// 发送验证挑战给用户
+async function sendVerificationChallenge(userInfo, env) {
+    const challenge = generateVerificationChallenge();
+    const user = await getUserFromKV(userInfo.chatId, env) || { chatId: userInfo.chatId };
+    user.verificationChallenge = { answer: challenge.answer };
+    await updateUserInKV(user, env);
+
+    await sendMessage(
+        userInfo.chatId,
+        `👋 你好！在开始聊天前，请先完成一个简单的验证以证明你不是机器人。\n\n${challenge.question}`,
+        env.BOT_TOKEN
+    );
+}
+
+// --- ADDED ---
+// Helper function to detect links in text
+function containsLink(text) {
+  if (typeof text !== 'string') return false;
+  // This regex is designed to be broad, catching http, https, www, and domain.tld formats.
+  const urlRegex = /(?:(?:https?|ftp):\/\/)?(?:www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b(?:[-a-zA-Z0-9()@:%_\+.~#?&//=]*)/i;
+  return urlRegex.test(text);
+}
+
+// --- MODIFIED ---
+// 原始的消息转发逻辑，被封装成一个新函数
+async function forwardUserMessage(message, env, userInfo, user) {
+  try {
     if (message.text === '/start') {
       await sendMessage(
         userInfo.chatId, 
         `👋 你好！我是消息转发机器人。\n\n请发送你的消息，我会转发给管理员并尽快回复你。`, 
         env.BOT_TOKEN
-      )
-      return
+      );
+      return;
+    }
+    
+    // Check for first message: must be text and contain no links
+    if (user && user.firstMessageSent === false) {
+      const hasLink = containsLink(message.text);
+      if (!message.text || hasLink) {
+        const reason = hasLink ? "包含链接" : "不是文本信息";
+        await sendMessage(userInfo.chatId, `💬 您的第一条消息必须是纯文本，不能${reason}。请重新发送。`, env.BOT_TOKEN);
+        return; // Do not forward
+      }
     }
 
-    // 创建包含用户信息的转发消息
-    const secureUserTag = await createSecureUserTag(userInfo.chatId, env.USER_ID_SECRET, userInfo.username)
-    let forwardResult
+    const secureUserTag = await createSecureUserTag(userInfo.chatId, env.USER_ID_SECRET, userInfo.username);
+    let forwardResult;
     
-    // 论坛话题模式支持
-    let messageOptions = {}
+    let messageOptions = {};
     if (env.ENABLE_FORUM_MODE === 'true') {
-      const isForumChat = await isForum(env.ADMIN_CHAT_ID, env.BOT_TOKEN)
+      const isForumChat = await isForum(env.ADMIN_CHAT_ID, env.BOT_TOKEN);
       if (isForumChat) {
-        const topicId = await getOrCreateUserTopic(userInfo.userId, userInfo.userName, env)
+        const topicId = await getOrCreateUserTopic(userInfo.userId, userInfo.userName, env);
         if (topicId) {
-          messageOptions.message_thread_id = topicId
+          messageOptions.message_thread_id = topicId;
         }
       }
     }
     
     if (message.text) {
-      // 文本消息
-      const escapedUserText = escapeMarkdown(message.text)
+      const escapedUserText = escapeMarkdown(message.text);
       const forwardText = env.ENABLE_FORUM_MODE === 'true' && messageOptions.message_thread_id
         ? `📝 *新消息:*\n${escapedUserText}\n\n📍 *来源:* ${secureUserTag}`
-        : `${userInfo.header}\n📝 *消息内容:*\n${escapedUserText}\n\n📍 *来源:* ${secureUserTag}`
+        : `${userInfo.header}\n📝 *消息内容:*\n${escapedUserText}\n\n📍 *来源:* ${secureUserTag}`;
       
-      forwardResult = await sendMessage(env.ADMIN_CHAT_ID, forwardText, env.BOT_TOKEN, messageOptions)
+      forwardResult = await sendMessage(env.ADMIN_CHAT_ID, forwardText, env.BOT_TOKEN, messageOptions);
     } else {
-      // 媒体消息
       const escapedCaption = message.caption ? escapeMarkdown(message.caption) : '';
       
-      // 根据消息类型确定媒体类型标识
       let mediaType = '📷 图片/文件';
       if (message.photo) mediaType = '📷 图片';
       else if (message.video) mediaType = '🎬 视频';
@@ -1005,26 +1096,29 @@ async function handleUserMessage(message, env) {
       
       const caption = env.ENABLE_FORUM_MODE === 'true' && messageOptions.message_thread_id
         ? `📝 *新消息:*${escapedCaption ? `\n${escapedCaption}` : `\n${mediaType}`}\n\n📍 *来源:* ${secureUserTag}`
-        : `${userInfo.header}\n${escapedCaption ? `📝 *说明:* ${escapedCaption}\n\n` : ''}📍 *来源:* ${secureUserTag}`
+        : `${userInfo.header}\n${escapedCaption ? `📝 *说明:* ${escapedCaption}\n\n` : ''}📍 *来源:* ${secureUserTag}`;
       
       forwardResult = await copyMessage(env.ADMIN_CHAT_ID, userInfo.chatId, message.message_id, env.BOT_TOKEN, {
         ...messageOptions,
         caption
-      })
+      });
     }
 
     if (forwardResult.ok) {
-      console.log(`消息转发成功: 用户 ${userInfo.userName} -> 管理员${messageOptions.message_thread_id ? ' (话题 ' + messageOptions.message_thread_id + ')' : ''}`)
-      
-      // 给用户发送确认消息
-      await sendMessage(userInfo.chatId, `✅ 你的消息已发送给管理员，请耐心等待回复。`, env.BOT_TOKEN)
+      console.log(`消息转发成功: 用户 ${userInfo.userName} -> 管理员${messageOptions.message_thread_id ? ' (话题 ' + messageOptions.message_thread_id + ')' : ''}`);
+      await sendMessage(userInfo.chatId, `✅ 你的消息已发送给管理员，请耐心等待回复。`, env.BOT_TOKEN);
+
+      if (user && user.firstMessageSent === false) {
+        user.firstMessageSent = true;
+        await updateUserInKV(user, env);
+      }
     }
   } catch (error) {
-    console.error('处理用户消息错误:', error)
+    console.error('处理用户消息错误:', error);
     try {
-      await sendMessage(userInfo.chatId, `❌ 抱歉，消息发送失败，请稍后再试。`, env.BOT_TOKEN)
+      await sendMessage(userInfo.chatId, `❌ 抱歉，消息发送失败，请稍后再试。`, env.BOT_TOKEN);
     } catch (sendError) {
-      console.error('发送错误消息失败:', sendError)
+      console.error('发送错误消息失败:', sendError);
     }
   }
 }
@@ -1032,7 +1126,6 @@ async function handleUserMessage(message, env) {
 // 处理管理员消息
 async function handleAdminMessage(message, env) {
   try {
-    // 管理员命令处理
     if (message.text === '/start') {
       const userTrackingStatus = env.ENABLE_USER_TRACKING === 'true' ? '🟢 已启用' : '🔴 未启用'
       const forumModeStatus = env.ENABLE_FORUM_MODE === 'true' ? '🟢 已启用' : '🔴 未启用'
@@ -1047,8 +1140,9 @@ async function handleAdminMessage(message, env) {
     }
 
     if (message.text === '/status') {
+      const users = await getUsersFromKV(env);
       const userCount = env.ENABLE_USER_TRACKING === 'true' 
-        ? (await getUsersFromKV(env)).length 
+        ? `${users.length} (已验证: ${users.filter(u=>u.verified).length})`
         : '未启用跟踪'
       
       const forumModeStatus = env.ENABLE_FORUM_MODE === 'true' ? '🟢 已启用' : '🔴 未启用'
@@ -1073,7 +1167,7 @@ async function handleAdminMessage(message, env) {
         `\n\n🗣️ *论坛模式:*\n• 每个用户有独立话题\n• 在话题中直接发送消息即可回复用户\n• 支持话题内的媒体消息回复` : ''
       
       await sendMessage(env.ADMIN_CHAT_ID, 
-        `❓ *帮助信息*\n\n🔄 *回复用户:*\n直接回复用户的消息即可发送回复给对应用户\n\n📢 *群发消息:*\n• \`/post all 消息内容\` - 向所有用户群发（需启用用户跟踪）\n• \`/post 123,456,789 消息内容\` - 向指定用户群发\n• 回复媒体消息并使用 /post 命令可群发媒体\n\n👥 *用户管理:*\n• \`/users\` - 查看已跟踪的用户列表\n\n📝 *消息格式:*\n• 支持文本、图片、文件等各种消息类型\n• 支持Markdown格式${forumHelp}\n\n⚙️ *命令列表:*\n• \`/start\` - 显示欢迎信息\n• \`/status\` - 查看机器人状态\n• \`/help\` - 显示此帮助信息\n• \`/post\` - 群发消息功能\n• \`/users\` - 查看用户列表`, 
+        `❓ *帮助信息*\n\n🔄 *回复用户:*\n直接回复用户的消息即可发送回复给对应用户\n\n📢 *群发消息:*\n• \`/post all 消息内容\` - 向所有已验证用户群发\n• \`/post 123,456,789 消息内容\` - 向指定用户群发\n• 回复媒体消息并使用 /post 命令可群发媒体\n\n👥 *用户管理:*\n• \`/users\` - 查看已跟踪的用户列表 (✅ 已验证, ⏳ 未验证)\n\n📝 *消息格式:*\n• 支持文本、图片、文件等各种消息类型\n• 支持Markdown格式${forumHelp}\n\n⚙️ *命令列表:*\n• \`/start\` - 显示欢迎信息\n• \`/status\` - 查看机器人状态\n• \`/help\` - 显示此帮助信息\n• \`/post\` - 群发消息功能\n• \`/users\` - 查看用户列表`, 
         env.BOT_TOKEN, 
         { message_thread_id: message.message_thread_id }
       )
@@ -1085,7 +1179,7 @@ async function handleAdminMessage(message, env) {
       
       if (!commandText) {
         await sendMessage(env.ADMIN_CHAT_ID, 
-          `📢 *群发功能使用说明*\n\n🎯 *命令格式:*\n• \`/post all 消息内容\` - 向所有用户群发\n• \`/post 123,456,789 消息内容\` - 向指定用户群发\n\n💡 *示例:*\n• \`/post all 系统维护通知：今晚22:00-23:00进行维护\`\n• \`/post 123456789,987654321 您好，这是一条测试消息\`\n\n📎 *群发媒体:*\n回复包含图片/文件的消息，然后使用 /post 命令\n\n⚠️ *注意:*\n• 使用 'all' 需要启用用户跟踪功能\n• 手动指定用户ID时，请用英文逗号分隔\n• 群发会自动限速以避免API限制`, 
+          `📢 *群发功能使用说明*\n\n🎯 *命令格式:*\n• \`/post all 消息内容\` - 向所有已验证用户群发\n• \`/post 123,456,789 消息内容\` - 向指定用户群发\n\n💡 *示例:*\n• \`/post all 系统维护通知：今晚22:00-23:00进行维护\`\n• \`/post 123456789,987654321 您好，这是一条测试消息\`\n\n📎 *群发媒体:*\n回复包含图片/文件的消息，然后使用 /post 命令\n\n⚠️ *注意:*\n• 使用 'all' 需要启用用户跟踪功能\n• 手动指定用户ID时，请用英文逗号分隔\n• 群发会自动限速以避免API限制`, 
           env.BOT_TOKEN, 
           { 
             reply_to_message_id: message.message_id,
@@ -1133,8 +1227,8 @@ async function handleAdminMessage(message, env) {
         return
       }
 
-      // 发送确认消息
-      const targetCount = userIds === 'all' ? (await getUsersFromKV(env)).length : userIds.length
+      const users = await getUsersFromKV(env);
+      const targetCount = userIds === 'all' ? users.filter(u=>u.verified).length : userIds.length;
       await sendMessage(env.ADMIN_CHAT_ID, 
         `🚀 开始群发消息...\n\n📊 目标用户数: ${targetCount}\n⏳ 请稍候...`, 
         env.BOT_TOKEN, 
@@ -1144,10 +1238,8 @@ async function handleAdminMessage(message, env) {
         }
       )
 
-      // 执行群发
       const results = await broadcastMessage(userIds, postMessage, env)
       
-      // 发送结果报告
       const reportText = `📊 *群发完成报告*\n\n✅ 成功: ${results.success}\n❌ 失败: ${results.failed}\n\n${results.errors.length > 0 ? `🔍 *错误详情:*\n${results.errors.slice(0, CONSTANTS.MAX_ERROR_DISPLAY).join('\n')}${results.errors.length > CONSTANTS.MAX_ERROR_DISPLAY ? `\n... 还有 ${results.errors.length - CONSTANTS.MAX_ERROR_DISPLAY} 个错误` : ''}` : '🎉 全部发送成功！'}`
       
       await sendMessage(env.ADMIN_CHAT_ID, reportText, env.BOT_TOKEN, { 
@@ -1176,7 +1268,6 @@ async function handleAdminMessage(message, env) {
         return
       }
 
-      // 排序（最近活跃优先）
       users.sort((a, b) => new Date(b.lastActive).getTime() - new Date(a.lastActive).getTime())
       const pageSize = CONSTANTS.USERS_DEFAULT_PAGE_SIZE || 20
       const { text, reply_markup } = buildUsersPage(users, 1, pageSize)
@@ -1187,11 +1278,9 @@ async function handleAdminMessage(message, env) {
       return
     }
 
-    // 处理回复消息（支持群发媒体）
     if (message.reply_to_message) {
       const repliedMessage = message.reply_to_message
       
-      // 检查是否是群发媒体命令（确保不是回复用户消息）
       const hasUserTag = repliedMessage.text?.includes('[USER:') || repliedMessage.caption?.includes('[USER:')
       if (message.text && message.text.startsWith('/post') && !hasUserTag) {
         const commandText = message.text.substring(5).trim()
@@ -1209,8 +1298,8 @@ async function handleAdminMessage(message, env) {
           return
         }
 
-        // 群发媒体消息
-        const targetCount = userIds === 'all' ? (await getUsersFromKV(env)).length : userIds.length
+        const users = await getUsersFromKV(env);
+        const targetCount = userIds === 'all' ? users.filter(u=>u.verified).length : userIds.length;
         await sendMessage(env.ADMIN_CHAT_ID, 
           `🚀 开始群发媒体消息...\n\n📊 目标用户数: ${targetCount}`, 
           env.BOT_TOKEN, 
@@ -1231,10 +1320,8 @@ async function handleAdminMessage(message, env) {
         return
       }
       
-      // 普通回复处理
       let userChatId = await extractUserChatId(repliedMessage.text || repliedMessage.caption, env.USER_ID_SECRET)
 
-      // 如果在论坛模式下且没有找到用户标识，尝试从话题ID查找
       if (!userChatId && env.ENABLE_FORUM_MODE === 'true' && message.message_thread_id) {
         userChatId = await getUserIdFromTopicId(message.message_thread_id, env)
         console.log(`从话题ID ${message.message_thread_id} 找到用户: ${userChatId}`)
@@ -1252,14 +1339,11 @@ async function handleAdminMessage(message, env) {
         return
       }
 
-      // 发送回复给用户
       let replyResult
       if (message.text) {
-        // 转义管理员消息中的特殊字符以避免 Markdown 解析错误
         const escapedText = escapeMarkdown(message.text);
         replyResult = await sendMessage(userChatId, `💬 *管理员回复:*\n\n${escapedText}`, env.BOT_TOKEN)
       } else {
-        // 使用改进的媒体消息发送函数
         replyResult = await sendMediaReplyToUser(userChatId, env.ADMIN_CHAT_ID, message.message_id, message.caption, env.BOT_TOKEN)
       }
 
@@ -1284,7 +1368,6 @@ async function handleAdminMessage(message, env) {
         )
       }
     } else if (env.ENABLE_FORUM_MODE === 'true' && message.message_thread_id) {
-      // 检查是否是系统消息（如创建话题、编辑话题等）
       const isSystemMessage = message.forum_topic_created || 
                              message.forum_topic_edited || 
                              message.forum_topic_closed || 
@@ -1296,18 +1379,14 @@ async function handleAdminMessage(message, env) {
         return
       }
       
-      // 处理论坛话题中的直接消息（非回复）
       const userChatId = await getUserIdFromTopicId(message.message_thread_id, env)
       
       if (userChatId) {
-        // 发送消息给用户
         let replyResult
         if (message.text) {
-          // 转义管理员消息中的特殊字符以避免 Markdown 解析错误
           const escapedText = escapeMarkdown(message.text);
           replyResult = await sendMessage(userChatId, `💬 *管理员回复:*\n\n${escapedText}`, env.BOT_TOKEN)
         } else {
-          // 使用改进的媒体消息发送函数
           replyResult = await sendMediaReplyToUser(userChatId, env.ADMIN_CHAT_ID, message.message_id, message.caption, env.BOT_TOKEN)
         }
 
@@ -1332,7 +1411,6 @@ async function handleAdminMessage(message, env) {
           )
         }
       } else {
-        // 只有在真正无法识别用户且不是系统消息时才显示警告
         await sendMessage(env.ADMIN_CHAT_ID, 
           `⚠️ 无法识别此话题对应的用户。请确保话题是由用户消息自动创建的。`, 
           env.BOT_TOKEN, 
@@ -1343,7 +1421,6 @@ async function handleAdminMessage(message, env) {
         )
       }
     } else {
-      // 普通消息（非回复）
       await sendMessage(env.ADMIN_CHAT_ID, 
         `💡 *提示:* 请回复具体的用户消息来发送回复，或使用群发命令。\n\n📢 群发: \`/post all 消息内容\`\n❓ 帮助: \`/help\``, 
         env.BOT_TOKEN, 
@@ -1368,7 +1445,6 @@ async function handleAdminMessage(message, env) {
 
 // 处理消息
 async function handleMessage(message, env) {
-  // 输入验证
   if (!message || !message.from || !message.chat) {
     console.error('无效的消息格式')
     return
@@ -1415,7 +1491,6 @@ async function handleUsersCallbackQuery(callbackQuery, env) {
 // 处理Webhook消息
 async function handleWebhook(request, env, ctx) {
   try {
-    // 验证Webhook密钥（如果设置了）
     if (env.WEBHOOK_SECRET) {
       const secretToken = request.headers.get('X-Telegram-Bot-Api-Secret-Token')
       if (secretToken !== env.WEBHOOK_SECRET) {
@@ -1426,10 +1501,8 @@ async function handleWebhook(request, env, ctx) {
     const update = await request.json()
     
     if (update.message) {
-      // 使用 ctx.waitUntil 进行后台消息处理，不阻塞响应
       ctx.waitUntil(handleMessage(update.message, env))
     } else if (update.callback_query) {
-      // 内联按钮回调处理（仅用于 /users 分页）
       const cq = update.callback_query;
       const data = cq.data || '';
       if (data && data.startsWith('users:')) {
@@ -1441,7 +1514,6 @@ async function handleWebhook(request, env, ctx) {
   } catch (error) {
     console.error('Webhook处理错误:', error)
     
-    // 使用 ctx.waitUntil 进行后台错误记录
     ctx.waitUntil(
       (async () => {
         try {
@@ -1460,7 +1532,6 @@ async function handleWebhook(request, env, ctx) {
 // 处理HTTP请求
 async function handleRequest(request, env, ctx) {
   try {
-    // 环境变量验证
     validateEnvironment(env);
   } catch (error) {
     logError('handleRequest', error);
@@ -1470,7 +1541,6 @@ async function handleRequest(request, env, ctx) {
   const url = new URL(request.url)
 
   try {
-    // 路由处理
     switch (true) {
       case request.method === 'POST' && url.pathname === '/webhook':
         return await handleWebhook(request, env, ctx)
@@ -1497,7 +1567,6 @@ async function handleRequest(request, env, ctx) {
   } catch (error) {
     console.error('请求处理错误:', error)
     
-    // 后台错误记录
     ctx.waitUntil(
       (async () => {
         try {
@@ -1518,4 +1587,4 @@ export default {
   async fetch(request, env, ctx) {
     return handleRequest(request, env, ctx)
   }
-} 
+}
