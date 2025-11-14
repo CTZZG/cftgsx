@@ -834,7 +834,7 @@ function buildUsersPage(users, page, pageSize) {
   const inline_keyboard = [];
   const navRow = [];
   if (currentPage > 1) {
-    navRow.push({ text: ◀️ 上一页', callback_data: `users:p=${currentPage - 1},s=${pageSize}` });
+    navRow.push({ text: '◀️ 上一页', callback_data: `users:p=${currentPage - 1},s=${pageSize}` });
   }
   if (currentPage < totalPages) {
     navRow.push({ text: '下一页 ▶️', callback_data: `users:p=${currentPage + 1},s=${pageSize}` });
